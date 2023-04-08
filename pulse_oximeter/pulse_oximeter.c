@@ -76,186 +76,25 @@ static struct i2c_client *i2c_client;
 
 /*irq number*/
 static int max30100_irq_num;
-/*length from user*/ // testing
+/*length from user*/
 static int length;
 
 /*global variable to know what to read*/
 static int flag = 0;
 
-#if 0 // periodic timer poll
-// use polling using periodic  kernel timer match with sample rate
-/*timer varialble*/
-static struct timer_list max30100_timer;
-
-/*timer call back function*/
-static void max30100_callback(struct timer_list *data)
-{
-  int ret;
-  printk("Timer function got called\n");
-  mod_timer(&max30100_timer, jiffies + msecs_to_jiffies(50));
-
-  instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-  ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to send int status reg offset\n");
-    return;
-  }
-  ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to read int status reg\n");
-    return;
-  }
-  printk("Interrupt Status Register = %x\n", instruction_buffer[0]);
-}
-#endif
-
-#if 0 // tasklet
-/*tasklet related*/
-static struct tasklet_struct *max30100_tasklet;
-
-/*tasklet function*/
-static void tasklet_fun(unsigned long arg)
-{
-  int ret;
-  int i;
-  instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-  ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to send interrput status register offset\n");
-    return;
-  }
-  ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to get interrput status register offset\n");
-    return;
-  }
-  printk("Interrupt status is %x\n", instruction_buffer[0]);
-  max30100_buffer[0] = FIFO_DATA_REG_OFFSET;
-  ret = i2c_master_send(i2c_client, max30100_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("Failed to send ffo data register offset\n");
-    return;
-  }
-  ret = i2c_master_recv(i2c_client, max30100_buffer, 4);
-  if (ret < 0)
-  {
-    pr_err("Failed to read fifo data\n");
-    return;
-  }
-  for (i = 0; i < 4; i++)
-  {
-    printk("FIFO Data = %d ", max30100_buffer[i]);
-  }
-  printk("Just testing tasklet\n");
-}
-#endif
-
 /*work queue*/
 static struct work_struct max30100_workqueue;
 
 /*Workqueue Function*/
-static void workqueue_fn(struct work_struct *work)
+static void max30100_workqueue_fn(struct work_struct *work)
 {
   int i = 0;
-  int temperature; // red, ir;
-  int rd_ptr, wr_ptr;
-  int ret, ov_ptr;
-  // printk("Executing Workqueue Function to Read Data...\n");
-  instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-  ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to send int status reg offset\n");
-    return;
-  }
-  ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-  if (ret < 0)
-  {
-    pr_err("failed to read int status reg\n");
-    return;
-  }
+  int ret;
+  printk("Work Queue Function Invoked\n");
   if (flag == 0)
   {
-    instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
+    for (i = 0; i < length; i++)
     {
-      pr_err("failed to set write pointer\n");
-      return;
-    }
-    instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to read pointer\n");
-      return;
-    }
-    instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to over flow counter\n");
-      return;
-    }
-    for (i = 0; i < length - 1; i++)
-    {
-      instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to write read pointer register\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read read pointer\n");
-        return;
-      }
-      rd_ptr = instruction_buffer[0];
-      //  printk("Read Pointer = %d\n", rd_ptr);
-
-      instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to write write pointer register\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read write pointer\n");
-        return;
-      }
-      wr_ptr = instruction_buffer[0];
-      // printk("Write Pointer = %d\n", wr_ptr);
-
-      instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to send over flow reg\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read over flow reg\n");
-        return;
-      }
-
-      ov_ptr = instruction_buffer[0];
-      //   printk("Over Flow Pointer = %d\n", ov_ptr);
-
       instruction_buffer[0] = FIFO_DATA_REG_OFFSET;
       ret = i2c_master_send(i2c_client, instruction_buffer, 1);
       if (ret < 0)
@@ -270,152 +109,50 @@ static void workqueue_fn(struct work_struct *work)
         pr_err("failed to read from FIFO\n");
         return;
       }
-      // printk("Oximeter Data = %d", max30100_buffer[i]);
+      printk("Oximeter Data = %d", max30100_buffer[i]);
     }
-
-    // ir = (max30100_buffer[1] << 8) | max30100_buffer[0];
-    // red = (max30100_buffer[3] << 8) | max30100_buffer[2];
-    //  printk("IR =  %d ", ir);
-    //  printk("RED = %d\n", red);
-    //  }
-    // else if (flag == 1)
-    //{
+  }
+  else if (flag == 1)
+  {
     instruction_buffer[0] = TEMP_INTEGER_REG_OFFSET;
     ret = i2c_master_send(i2c_client, instruction_buffer, 1);
     if (ret < 0)
     {
-      pr_err("failed to send temperature int reg offset\n");
+      pr_err("failed to send temp reg off set\n");
       return;
     }
-    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+
+    ret = i2c_master_recv(i2c_client, max30100_buffer, 1);
     if (ret < 0)
     {
-      pr_err("failed to read temperature integer value\n");
+      pr_err("failed to read temp int\n");
       return;
     }
-    temperature = instruction_buffer[0];
-    // printk("Temperature Integer Value = %d\n", temperature);
+    printk("Int temp = %d\n", max30100_buffer[0]);
 
     instruction_buffer[0] = TEMP_FRACTION_REG_OFFSET;
     ret = i2c_master_send(i2c_client, instruction_buffer, 1);
     if (ret < 0)
     {
-      pr_err("failed to send temperature fraction reg offset\n");
+      pr_err("failed to send temp frac reg offset\n");
       return;
     }
-    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+
+    ret = i2c_master_recv(i2c_client, max30100_buffer + 1, 1);
     if (ret < 0)
     {
-      pr_err("failed to read temperature fraction value\n");
+      pr_err("failed to read temp frac\n");
       return;
     }
-    instruction_buffer[0] = ((1 << 4) - 1) & (instruction_buffer[0] >> 0);
-    // printk("Temperature Fraction Value = %d\n", max30100_buffer[0]);
-    temperature = temperature + instruction_buffer[0];
-    // printk("Final Temperature Value = %d\n", temperature);
-    max30100_buffer[length - 1] = temperature;
-  }
-  else if (flag == 1)
-  {
-    instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to set write pointer\n");
-      return;
-    }
-    instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to read pointer\n");
-      return;
-    }
-    instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
-    instruction_buffer[1] = 0x00;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to over flow counter\n");
-      return;
-    }
-    for (i = 0; i < length; i++)
-    {
-      instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to write read pointer register\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read read pointer\n");
-        return;
-      }
-      rd_ptr = instruction_buffer[0];
-      //  printk("Read Pointer = %d\n", rd_ptr);
-
-      instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to write write pointer register\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read write pointer\n");
-        return;
-      }
-      wr_ptr = instruction_buffer[0];
-      // printk("Write Pointer = %d\n", wr_ptr);
-
-      instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to send over flow reg\n");
-        return;
-      }
-      ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read over flow reg\n");
-        return;
-      }
-
-      ov_ptr = instruction_buffer[0];
-      //   printk("Over Flow Pointer = %d\n", ov_ptr);
-
-      instruction_buffer[0] = FIFO_DATA_REG_OFFSET;
-      ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to send fifo data register\n");
-        return;
-      }
-
-      ret = i2c_master_recv(i2c_client, max30100_buffer + i, 1);
-      if (ret < 0)
-      {
-        pr_err("failed to read from FIFO\n");
-        return;
-      }
-    }
+    printk("Frac temp = %x\n", max30100_buffer[1]);
   }
 }
 
 /*interrupt handler*/
 static irqreturn_t max30100_irq_handler(int irq, void *dev_id)
 {
-  // printk("Interrupt Occured..\n Scheduling Workqueue....\n");
+  printk("Interrupt Occured...\n");
   schedule_work(&max30100_workqueue);
-  // tasklet_schedule(max30100_tasklet);
   return IRQ_HANDLED;
 }
 
@@ -431,31 +168,32 @@ static int config_setup(struct i2c_client *i2c_client)
     pr_err("failed to send interrput status register offset\n");
     return FAILURE;
   }
+
   ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
   if (ret < 0)
   {
     pr_err("failed to get interrput status register offset\n");
     return FAILURE;
   }
-  printk("Interrupt status is %x\n", instruction_buffer[0]);
-  printk("Interrupt PWR_RDY Status = %d\n", (instruction_buffer[0] >> 0) & 0x1);
-  printk("Interrupt B1 Status = %d\n", (instruction_buffer[0] >> 1) & 0x1);
-  printk("Interrupt B2 Status = %d\n", (instruction_buffer[0] >> 2) & 0x1);
-  printk("Interrupt B3 Status = %d\n", (instruction_buffer[0] >> 3) & 0x1);
-  printk("Interrupt SPO2_RDY Status = %d\n", (instruction_buffer[0] >> 4) & 0x1);
-  printk("Interrupt HR_RDY Status = %d\n", (instruction_buffer[0] >> 5) & 0x1);
-  printk("Interrupt TEMP_RDY Status = %d\n", (instruction_buffer[0] >> 6) & 0x1);
-  printk("Interrupt A_FULL Status = %d\n", (instruction_buffer[0] >> 7) & 0x1);
-
+  /*
+    printk("Interrupt status is %x\n", instruction_buffer[0]);
+    printk("Interrupt PWR_RDY Status = %d\n", (instruction_buffer[0] >> 0) & 0x1);
+    printk("Interrupt B1 Status = %d\n", (instruction_buffer[0] >> 1) & 0x1);
+    printk("Interrupt B2 Status = %d\n", (instruction_buffer[0] >> 2) & 0x1);
+    printk("Interrupt B3 Status = %d\n", (instruction_buffer[0] >> 3) & 0x1);
+    printk("Interrupt SPO2_RDY Status = %d\n", (instruction_buffer[0] >> 4) & 0x1);
+    printk("Interrupt HR_RDY Status = %d\n", (instruction_buffer[0] >> 5) & 0x1);
+    printk("Interrupt TEMP_RDY Status = %d\n", (instruction_buffer[0] >> 6) & 0x1);
+    printk("Interrupt A_FULL Status = %d\n", (instruction_buffer[0] >> 7) & 0x1);
+  */
   instruction_buffer[0] = LED_CONFIG_REG_OFFSET;
-  instruction_buffer[1] = 0x22; // LED Current = 7.6 mA
+  instruction_buffer[1] = 0x66; // LED Current = 20 mA
   ret = i2c_master_send(i2c_client, instruction_buffer, 2);
   if (ret < 0)
   {
     pr_err("failed to send led config reg\n");
-    return ret;
+    return FAILURE;
   }
-
   printk("Done Initial Setup\n");
   return SUCCESS;
 }
@@ -542,11 +280,7 @@ static int max30100_open(struct inode *inode, struct file *file)
     return FAILURE;
   }
 
-  // max30100_tasklet = kzalloc(sizeof(struct tasklet_struct), GFP_KERNEL);
-  // tasklet_init(max30100_tasklet, tasklet_fun, 0);
-  // timer_setup(&max30100_timer, max30100_callback, 0);
-  // mod_timer(&max30100_timer, jiffies + msecs_to_jiffies(30));
-  INIT_WORK(&max30100_workqueue, workqueue_fn);
+  INIT_WORK(&max30100_workqueue, max30100_workqueue_fn);
   printk("I2C max30100 Slave Device Opened...\n");
   return SUCCESS;
 }
@@ -554,8 +288,6 @@ static int max30100_open(struct inode *inode, struct file *file)
 /*max30100 close function*/
 static int max30100_release(struct inode *inode, struct file *file)
 {
-  // del_timer(&max30100_timer);
-  //  tasklet_kill(max30100_tasklet);
   free_irq(max30100_irq_num, NULL);
   gpio_free(MAX30100_INTERRUPT_PIN);
   config_release(i2c_client);
@@ -567,10 +299,17 @@ static int max30100_release(struct inode *inode, struct file *file)
 /*max30100 read function*/
 static ssize_t max30100_read(struct file *file, char __user *buf, size_t len, loff_t *off)
 {
-
-  // printk("Read function invoked...\n");
-
+  // int i = 0;
+  // int temperature; // red, ir;
+  // int rd_ptr, wr_ptr;
+  // int ret, ov_ptr;
   length = len;
+
+  // ir = (max30100_buffer[0] << 8) | max30100_buffer[1];
+  // red = (max30100_buffer[2] << 8) | max30100_buffer[3];
+  //  printk("IR =  %d ", ir);
+  //  printk("RED = %d\n", red);
+  // printk("flag = %d\n", flag);
   if (copy_to_user(buf, max30100_buffer, length) > 0)
   {
     pr_err("failed to read all the bytes\n");
@@ -595,61 +334,48 @@ static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long ar
       pr_err("failed to set heart rate only mode\n");
       return FAILURE;
     }
+
     instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
-    instruction_buffer[1] = 0x20; // enabling heart interrupt interrupt
+    instruction_buffer[1] = 0xa0;
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
       pr_err("failed to enable interrupt\n");
-      return FAILURE;
+      return -1;
     }
-    instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 1);
+
+    instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
-      pr_err("failed to send interrput status register offset\n");
+      pr_err("failed to set write pointer\n");
       return FAILURE;
     }
-    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+    instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
-      pr_err("failed to get interrput status register offset\n");
+      pr_err("failed to read pointer\n");
       return FAILURE;
     }
-    printk("Interrupt status is %x\n", instruction_buffer[0]);
-    printk("Interrupt HR_RDY Status = %d\n", (instruction_buffer[0] >> 5) & 0x1);
-    flag = 1;
+    instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to over flow counter\n");
+      return FAILURE;
+    }
+    flag = 0;
     printk("Succefully Set Heart Rate Mode\n");
     break;
   }
   case SPO2_MODE:
   {
-    instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
-    instruction_buffer[1] = 0x50; // enabling spo2 + temperature interrupt
-    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-    if (ret < 0)
-    {
-      pr_err("failed to enable interrupt\n");
-      return FAILURE;
-    }
-    instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-    if (ret < 0)
-    {
-      pr_err("failed to send interrput status register offset\n");
-      return FAILURE;
-    }
-    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-    if (ret < 0)
-    {
-      pr_err("failed to get interrput status register offset\n");
-      return FAILURE;
-    }
-    printk("Interrupt status is %x\n", instruction_buffer[0]);
-    printk("Interrupt SPO2_RDY Status = %d\n", (instruction_buffer[0] >> 4) & 0x1);
-
     instruction_buffer[0] = MODE_CONFIG_REG_OFFSET;
-    instruction_buffer[1] = 0xb; // for SPO2 + temperature
+    instruction_buffer[1] = 0x03; // for SPO2
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
@@ -665,47 +391,68 @@ static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long ar
       pr_err("failed to set SPO2 Mode config reg\n");
       return ret;
     }
+
+    instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
+    instruction_buffer[1] = 0xd0;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to enable interrupt\n");
+      return -1;
+    }
+
+    instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to set write pointer\n");
+      return FAILURE;
+    }
+    instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to read pointer\n");
+      return FAILURE;
+    }
+
+    instruction_buffer[0] = FIFO_OVER_FLOW_REG_OFFSET;
+    instruction_buffer[1] = 0x00;
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to over flow counter\n");
+      return FAILURE;
+    }
     flag = 0;
-    printk("Succefully Set SPO2 + Temperature Mode\n");
+    printk("Succefully Set SPO2 Mode\n");
     break;
   }
-  /*case TEMPERATURE_MODE:
+  case TEMPERATURE_MODE:
   {
     instruction_buffer[0] = MODE_CONFIG_REG_OFFSET;
     instruction_buffer[1] = 0x08; // for temperature
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
-      pr_err("failed to set temperature only mode\n");
+      pr_err("failed to set heart rate only mode\n");
       return FAILURE;
     }
+
     instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
-    instruction_buffer[1] = 0x40; // enabling temperature interrupt
+    instruction_buffer[1] = 0x10;
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
       pr_err("failed to enable interrupt\n");
-      return FAILURE;
+      return -1;
     }
-    instruction_buffer[0] = INT_STATUS_REG_OFFSET;
-    ret = i2c_master_send(i2c_client, instruction_buffer, 1);
-    if (ret < 0)
-    {
-      pr_err("failed to send interrput status register offset\n");
-      return FAILURE;
-    }
-    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
-    if (ret < 0)
-    {
-      pr_err("failed to get interrput status register offset\n");
-      return FAILURE;
-    }
-    printk("Interrupt status is %x\n", instruction_buffer[0]);
-    printk("Interrupt TEMP_RDY Status = %d\n", (instruction_buffer[0] >> 6) & 0x1);
     flag = 1;
-    printk("Succefully set Temperature Mode\n");
+    printk("Temperature Mode Set\n");
     break;
-  }*/
+  }
   default:
   {
     printk("Invalid Mode selected\n");

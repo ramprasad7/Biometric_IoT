@@ -16,7 +16,7 @@
 int main()
 {
     char buf[100] = {0};
-    int len, fd, op;
+    int len, fd, op, ir, red;
     fd = open("/dev/pulse_oximeter", O_RDWR);
     if (fd < 0)
     {
@@ -30,15 +30,17 @@ int main()
     {
     case 1:
     {
+
         if (ioctl(fd, HEART_RATE_MODE, 0) < 0)
         {
             perror("failed to set Heart rate mode\n");
             return -1;
         }
-        len = 2;
+        len = 64;
         printf("Succefully set Heart Rate Only Mode\n");
         while (1)
         {
+            int hrsum = 0;
             if (read(fd, buf, len) < 0)
             {
                 perror("failed to read from device\n");
@@ -47,8 +49,10 @@ int main()
             printf("Readings: ");
             for (int i = 0; i < len; i++)
             {
+                hrsum += buf[i];
                 printf("%d ", buf[i]);
             }
+            printf("Average HR = %d\n", hrsum / 64);
             /*printf("Hear Rate = %d bpm\t", buf[0]);
             printf("SPO2 = %d \t", buf[1]);
             printf("Temperature = %d deg C\n", buf[2]);
@@ -65,21 +69,27 @@ int main()
             perror("failed to set SPO2 mode\n");
             return -1;
         }
-        len = 5;
+        len = 64;
         printf("Succefully set SPO2 Mode\n");
         while (1)
         {
+            int spsum = 0;
             if (read(fd, buf, len) < 0)
             {
                 perror("failed to read from device\n");
                 return -1;
             }
             printf("Readings: ");
-            for (int i = 0; i < len - 1; i++)
+            for (int i = 0; i < len; i++)
             {
+                spsum += buf[i];
                 printf("%d ", buf[i]);
             }
-            printf("Temperature = %d deg C\n", buf[len - 1]);
+            printf("Average SPO2 = %d\n", spsum / 64);
+            // ir = (buf[0] << 8) | buf[1];
+            // red = (buf[2] << 8) | buf[3];
+            // printf("SPO2 = %d%%\n", 110 - (red / ir) * 25);
+            // printf("Temperature = %d deg C\n", buf[len - 1]);
             /*printf("Hear Rate = %d bpm\t", buf[0]);
             printf("SPO2 = %d \t", buf[1]);
             printf("Temperature = %d deg C\n", buf[2]);
