@@ -13,6 +13,7 @@
 #include <linux/timer.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
+#include <linux/mutex.h>
 
 /*User Defined Macros for Errors*/
 #define SUCCESS 0
@@ -34,12 +35,12 @@
 #define HEART_RATE_MODE _IOW('a', 'b', int)
 #define SPO2_MODE _IOW('a', 'a', int)
 #define TEMPERATURE_MODE _IOW('a', 'c', int)
-
+#define LED_CURRENT_SETTING _IOW('a', 'd', int)
 /*buffer size*/
 #define BUF_SIZE 64
 
 /*driver buffer*/
-static char *max30100_buffer;
+static char max30100_buffer[BUF_SIZE];
 /*instruction buffer*/
 static char instruction_buffer[2];
 
@@ -85,14 +86,77 @@ static int flag = 0;
 /*work queue*/
 static struct work_struct max30100_workqueue;
 
+/*mutex lock*/
+struct mutex max30100_lock;
+
 /*Workqueue Function*/
 static void max30100_workqueue_fn(struct work_struct *work)
 {
   int i = 0;
-  int ret;
-  printk("Work Queue Function Invoked\n");
+  int num_samples;
+  int ret, rd_ptr, wr_ptr;
+  // printk("Work Queue Function Invoked\n");
+  instruction_buffer[0] = INT_STATUS_REG_OFFSET;
+  ret = i2c_master_send(i2c_client, instruction_buffer, 1);
+  if (ret < 0)
+  {
+    pr_err("failed to send interrput status register offset\n");
+    return;
+  }
+
+  ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+  if (ret < 0)
+  {
+    pr_err("failed to get interrput status register offset\n");
+    return;
+  }
+
+  // printk("interrupt status = %x\n", instruction_buffer[0]);
+
   if (flag == 0)
   {
+    instruction_buffer[0] = FIFO_RD_PTR_REG_OFFSET;
+
+    ret = i2c_master_send(i2c_client, instruction_buffer, 1);
+    if (ret < 0)
+    {
+      pr_err("failed to send rd ptr\n");
+    }
+    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+    if (ret < 0)
+    {
+      pr_err("failed to read rd ptr\n");
+    }
+    rd_ptr = instruction_buffer[0];
+
+    instruction_buffer[0] = FIFO_WR_PTR_REG_OFFSET;
+
+    ret = i2c_master_send(i2c_client, instruction_buffer, 1);
+    if (ret < 0)
+    {
+      pr_err("failed to send wr ptr\n");
+    }
+    ret = i2c_master_recv(i2c_client, instruction_buffer, 1);
+    if (ret < 0)
+    {
+      pr_err("failed to read wr ptr\n");
+    }
+
+    wr_ptr = instruction_buffer[0];
+    // printk("write ptr = %d\n", wr_ptr);
+    // printk("read ptr = %d\n", rd_ptr);
+    if (wr_ptr > rd_ptr)
+    {
+      num_samples = wr_ptr - rd_ptr;
+    }
+    else
+    {
+      num_samples = (16 - rd_ptr) + wr_ptr;
+    }
+    length = num_samples * 4;
+    // printk("number of samples = %d\n", num_samples);
+    // printk("length to read = %d\n", length);
+    mutex_lock(&max30100_lock);
     for (i = 0; i < length; i++)
     {
       instruction_buffer[0] = FIFO_DATA_REG_OFFSET;
@@ -102,15 +166,15 @@ static void max30100_workqueue_fn(struct work_struct *work)
         pr_err("failed to send fifo data register\n");
         return;
       }
-
       ret = i2c_master_recv(i2c_client, max30100_buffer + i, 1);
       if (ret < 0)
       {
         pr_err("failed to read from FIFO\n");
         return;
       }
-      printk("Oximeter Data = %d", max30100_buffer[i]);
+      // printk("Oximeter Data = %d", max30100_buffer[i]);
     }
+    mutex_unlock(&max30100_lock);
   }
   else if (flag == 1)
   {
@@ -151,7 +215,7 @@ static void max30100_workqueue_fn(struct work_struct *work)
 /*interrupt handler*/
 static irqreturn_t max30100_irq_handler(int irq, void *dev_id)
 {
-  printk("Interrupt Occured...\n");
+  // printk("Interrupt Occured...\n");
   schedule_work(&max30100_workqueue);
   return IRQ_HANDLED;
 }
@@ -161,6 +225,16 @@ static int config_setup(struct i2c_client *i2c_client)
 {
   int ret;
   printk("Setting up Configurations..\n");
+
+  instruction_buffer[0] = MODE_CONFIG_REG_OFFSET;
+  instruction_buffer[1] = 0x40;
+
+  ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+  if (ret < 0)
+  {
+    pr_err("failed to reset\n");
+    return -1;
+  }
   instruction_buffer[0] = INT_STATUS_REG_OFFSET;
   ret = i2c_master_send(i2c_client, instruction_buffer, 1);
   if (ret < 0)
@@ -187,7 +261,7 @@ static int config_setup(struct i2c_client *i2c_client)
     printk("Interrupt A_FULL Status = %d\n", (instruction_buffer[0] >> 7) & 0x1);
   */
   instruction_buffer[0] = LED_CONFIG_REG_OFFSET;
-  instruction_buffer[1] = 0x66; // LED Current = 20 mA
+  instruction_buffer[1] = 0x8f; // LED Current : Red = 27.1 mA & IR = 50 mA
   ret = i2c_master_send(i2c_client, instruction_buffer, 2);
   if (ret < 0)
   {
@@ -202,28 +276,13 @@ static int config_setup(struct i2c_client *i2c_client)
 static void config_release(struct i2c_client *i2c_client)
 {
   int ret;
-  instruction_buffer[0] = LED_CONFIG_REG_OFFSET;
-  instruction_buffer[1] = 0x00;
-  ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-  if (ret < 0)
-  {
-    pr_err("failed to change LED config\n");
-    return;
-  }
-  instruction_buffer[0] = SPO2_CONFIG_REG_OFFSET;
-  instruction_buffer[1] = 0x00;
-  ret = i2c_master_send(i2c_client, instruction_buffer, 2);
-  if (ret < 0)
-  {
-    pr_err("failed to change SPO2 config\n");
-    return;
-  }
   instruction_buffer[0] = MODE_CONFIG_REG_OFFSET;
-  instruction_buffer[1] = 0x00;
+  instruction_buffer[1] = 0x40;
+
   ret = i2c_master_send(i2c_client, instruction_buffer, 2);
   if (ret < 0)
   {
-    pr_err("failed to change Mode config\n");
+    pr_err("failed to reset\n");
     return;
   }
   printk("Done resetting all registers\n");
@@ -233,12 +292,12 @@ static void config_release(struct i2c_client *i2c_client)
 static int max30100_open(struct inode *inode, struct file *file)
 {
   int ret;
-  max30100_buffer = kzalloc(BUF_SIZE, GFP_KERNEL);
-  if (max30100_buffer == NULL)
+  // max30100_buffer = kzalloc(BUF_SIZE, GFP_KERNEL);
+  /*if (max30100_buffer == NULL)
   {
     pr_err("failed to allocate memory for driver buffer\n");
     return FAILURE;
-  }
+  }*/
   ret = config_setup(i2c_client);
   if (ret < 0)
   {
@@ -276,11 +335,13 @@ static int max30100_open(struct inode *inode, struct file *file)
     pr_err("failed to request for irq\n");
     gpio_free(MAX30100_INTERRUPT_PIN);
     config_release(i2c_client);
-    kfree(max30100_buffer);
+    // kfree(max30100_buffer);
     return FAILURE;
   }
 
   INIT_WORK(&max30100_workqueue, max30100_workqueue_fn);
+
+  mutex_init(&max30100_lock);
   printk("I2C max30100 Slave Device Opened...\n");
   return SUCCESS;
 }
@@ -291,7 +352,7 @@ static int max30100_release(struct inode *inode, struct file *file)
   free_irq(max30100_irq_num, NULL);
   gpio_free(MAX30100_INTERRUPT_PIN);
   config_release(i2c_client);
-  kfree(max30100_buffer);
+  // kfree(max30100_buffer);
   printk("I2C max30100 Slave Device Closed\n");
   return SUCCESS;
 }
@@ -299,23 +360,20 @@ static int max30100_release(struct inode *inode, struct file *file)
 /*max30100 read function*/
 static ssize_t max30100_read(struct file *file, char __user *buf, size_t len, loff_t *off)
 {
-  // int i = 0;
-  // int temperature; // red, ir;
-  // int rd_ptr, wr_ptr;
-  // int ret, ov_ptr;
-  length = len;
+  mutex_lock(&max30100_lock);
+  if (length > len)
+  {
+    pr_err("read length exceeded\n");
+    return -1;
+  }
 
-  // ir = (max30100_buffer[0] << 8) | max30100_buffer[1];
-  // red = (max30100_buffer[2] << 8) | max30100_buffer[3];
-  //  printk("IR =  %d ", ir);
-  //  printk("RED = %d\n", red);
-  // printk("flag = %d\n", flag);
   if (copy_to_user(buf, max30100_buffer, length) > 0)
   {
     pr_err("failed to read all the bytes\n");
     return FAILURE;
   }
-  return len;
+  mutex_unlock(&max30100_lock);
+  return length;
 }
 
 static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -336,7 +394,7 @@ static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long ar
     }
 
     instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
-    instruction_buffer[1] = 0xa0;
+    instruction_buffer[1] = 0x80;
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
@@ -393,7 +451,7 @@ static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long ar
     }
 
     instruction_buffer[0] = INT_ENABLE_REG_OFFSET;
-    instruction_buffer[1] = 0xd0;
+    instruction_buffer[1] = 0x80;
     ret = i2c_master_send(i2c_client, instruction_buffer, 2);
     if (ret < 0)
     {
@@ -451,6 +509,19 @@ static long max30100_ioctl(struct file *file, unsigned int cmd, unsigned long ar
     }
     flag = 1;
     printk("Temperature Mode Set\n");
+    break;
+  }
+  case LED_CURRENT_SETTING:
+  {
+    instruction_buffer[0] = LED_CONFIG_REG_OFFSET;
+    instruction_buffer[1] = (uint8_t)arg;
+    printk("arg = %x\n", instruction_buffer[1]);
+    ret = i2c_master_send(i2c_client, instruction_buffer, 2);
+    if (ret < 0)
+    {
+      pr_err("failed to set current\n");
+      return -1;
+    }
     break;
   }
   default:

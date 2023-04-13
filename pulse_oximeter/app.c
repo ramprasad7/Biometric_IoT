@@ -30,7 +30,6 @@ int main()
     {
     case 1:
     {
-
         if (ioctl(fd, HEART_RATE_MODE, 0) < 0)
         {
             perror("failed to set Heart rate mode\n");
@@ -38,21 +37,23 @@ int main()
         }
         len = 64;
         printf("Succefully set Heart Rate Only Mode\n");
+        printf("Readings: ");
         while (1)
         {
-            int hrsum = 0;
             if (read(fd, buf, len) < 0)
             {
                 perror("failed to read from device\n");
                 return -1;
             }
-            printf("Readings: ");
-            for (int i = 0; i < len; i++)
+
+            for (int i = 0; i < len; i += 4)
             {
-                hrsum += buf[i];
                 printf("%d ", buf[i]);
+                printf("%d ", buf[i + 1]);
+                printf("%d ", buf[i + 2]);
+                printf("%d ", buf[i + 3]);
+                printf("\n");
             }
-            printf("Average HR = %d\n", hrsum / 64);
             /*printf("Hear Rate = %d bpm\t", buf[0]);
             printf("SPO2 = %d \t", buf[1]);
             printf("Temperature = %d deg C\n", buf[2]);
@@ -71,21 +72,22 @@ int main()
         }
         len = 64;
         printf("Succefully set SPO2 Mode\n");
+        printf("Readings: ");
         while (1)
         {
-            int spsum = 0;
             if (read(fd, buf, len) < 0)
             {
                 perror("failed to read from device\n");
                 return -1;
             }
-            printf("Readings: ");
-            for (int i = 0; i < len; i++)
+            for (int i = 0; i < len; i += 4)
             {
-                spsum += buf[i];
                 printf("%d ", buf[i]);
+                printf("%d ", buf[i + 1]);
+                printf("%d ", buf[i + 2]);
+                printf("%d ", buf[i + 3]);
+                printf("\n");
             }
-            printf("Average SPO2 = %d\n", spsum / 64);
             // ir = (buf[0] << 8) | buf[1];
             // red = (buf[2] << 8) | buf[3];
             // printf("SPO2 = %d%%\n", 110 - (red / ir) * 25);
@@ -99,27 +101,6 @@ int main()
         }
         break;
     }
-        /*case 3:
-        {
-            if (ioctl(fd, TEMPERATURE_MODE, 0) < 0)
-            {
-                perror("failed to set Temperature mode\n");
-                return -1;
-            }
-            len = 1;
-            printf("Succefully set Temperature Mode\n");
-            while (1)
-            {
-                if (read(fd, buf, len) < 0)
-                {
-                    perror("failed to read from device\n");
-                    return -1;
-                }
-                printf("Temperature = %d °C\n", buf[0]);
-                usleep(1000000);
-            }
-            break;
-    }*/
     default:
     {
         printf("Invalid Chocie.\n");

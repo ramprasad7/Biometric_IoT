@@ -1,145 +1,58 @@
-#include <stdio.h>
-#include <math.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/time.h>
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <stdlib.h>
-#include <time.h>
-#include <sys/ioctl.h>
-
-/*IOCLT Commands to set mode configurations*/
-#define HEART_RATE_MODE _IOW('a', 'b', int)
-#define SPO2_MODE _IOW('a', 'a', int)
-#define TEMPERATURE_MODE _IOW('a', 'c', int)
-
-typedef uint8_t byte;
-
-#define MAX 64
-
-/* SaO2 parameters */
-#define RESET_SPO2_EVERY_N_PULSES 4
-
-/* Filter parameters */
-#define ALPHA 0.95 // dc filter alpha value
-#define MEAN_FILTER_SIZE 15
-
-/* Pulse detection parameters */
-#define PULSE_MIN_THRESHOLD 100 // 300 is good for finger, but for wrist you need like 20, and there is shitloads of noise
-#define PULSE_MAX_THRESHOLD 2000
-#define PULSE_GO_DOWN_THRESHOLD 1
-
-#define PULSE_BPM_SAMPLE_SIZE 10 // Moving average size
-/* Adjust RED LED current balancing*/
-#define MAGIC_ACCEPTABLE_INTENSITY_DIFF 65000
-#define RED_LED_CURRENT_ADJUSTMENT_MS 500
+#include "filter.h"
 
 /*read buffer*/
-static char buf[MAX];
+extern char buffer[BUF_SIZE];
 
-/*millis*/
-unsigned int millis()
-{
-    struct timeval t;
-    gettimeofday(&t, NULL);
-    return t.tv_sec * 1000 + (t.tv_usec + 500) / 1000;
-}
+extern char filter_buf[4];
 
-unsigned int millis1()
-{
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t); // change CLOCK_MONOTONIC_RAW to CLOCK_MONOTONIC on non linux computers
-    return (t.tv_sec * 1000 + (t.tv_nsec + 500000) / 1000000);
-}
-
-/* Enums, data structures and typdefs. DO NOT EDIT */
-typedef struct pulseoxymeter_t
-{
-    bool pulseDetected;
-    float heartBPM;
-
-    float irCardiogram;
-
-    float irDcValue;
-    float redDcValue;
-
-    float SaO2;
-
-    uint32_t lastBeatThreshold;
-
-    float dcFilteredIR;
-    float dcFilteredRed;
-} pulseoxymeter_t;
-
-typedef enum PulseStateMachine
-{
-    PULSE_IDLE,
-    PULSE_TRACE_UP,
-    PULSE_TRACE_DOWN
-} PulseStateMachine;
-
-typedef struct fifo_t
-{
-    uint16_t rawIR;
-    uint16_t rawRed;
-} fifo_t;
-
-typedef struct dcFilter_t
-{
-    float w;
-    float result;
-} dcFilter_t;
-
-typedef struct butterworthFilter_t
-{
-    float v[2];
-    float result;
-} butterworthFilter_t;
-
-typedef struct meanDiffFilter_t
-{
-    float values[MEAN_FILTER_SIZE];
-    byte index;
-    float sum;
-    byte count;
-} meanDiffFilter_t;
+/*file desciptor*/
+extern int fd;
 
 /*global variables*/
+static dcFilter_t dcFilterIR;
+static dcFilter_t dcFilterRed;
+static butterworthFilter_t lpbFilterIR;
+static meanDiffFilter_t meanDiffIR;
+static fifo_t prevFifo;
+static LEDCurrent IrLedCurrent;
 
-dcFilter_t dcFilterIR;
-dcFilter_t dcFilterRed;
-butterworthFilter_t lpbFilterIR;
-meanDiffFilter_t meanDiffIR;
-fifo_t prevFifo;
+static float irACValueSqSum;
+static float redACValueSqSum;
+static uint16_t samplesRecorded;
+static uint16_t pulsesDetected;
+static float currentSaO2Value;
 
-float irACValueSqSum;
-float redACValueSqSum;
-uint16_t samplesRecorded;
-uint16_t pulsesDetected;
-float currentSaO2Value;
+static uint8_t redLEDCurrent;
+static float lastREDLedCurrentCheck;
+
+static uint8_t currentPulseDetectorState;
+static float currentBPM;
+static float valuesBPM[PULSE_BPM_SAMPLE_SIZE];
+static float valuesBPMSum;
+static uint8_t valuesBPMCount;
+static uint8_t bpmIndex;
+static uint32_t lastBeatThreshold;
 
 bool debug;
 
-uint8_t redLEDCurrent;
-float lastREDLedCurrentCheck;
-
-uint8_t currentPulseDetectorState;
-float currentBPM;
-float valuesBPM[PULSE_BPM_SAMPLE_SIZE];
-float valuesBPMSum;
-uint8_t valuesBPMCount;
-uint8_t bpmIndex;
-uint32_t lastBeatThreshold;
+/*millis*/
+static unsigned int millis()
+{
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    return (t.tv_sec * 1000) + (t.tv_usec + 500) / 1000;
+}
 
 static fifo_t readFIFO()
 {
     fifo_t result;
-    result.rawIR = (buf[0] << 8) | buf[1];
-    result.rawRed = (buf[2] << 8) | buf[3];
+    for (int i = 0; i < 4; i++)
+    {
+        printf("filter buf = %d ", filter_buf[i]);
+    }
+    printf("\n");
+    result.rawIR = (filter_buf[0] << 8) | filter_buf[1];
+    result.rawRed = (filter_buf[2] << 8) | filter_buf[3];
     return result;
 }
 
@@ -150,6 +63,7 @@ static dcFilter_t dcRemoval(float x, float prev_w, float alpha)
     filtered.result = filtered.w - prev_w;
     return filtered;
 }
+
 static void lowPassButterworthFilter(float x, butterworthFilter_t *filterResult)
 {
     filterResult->v[0] = filterResult->v[1];
@@ -158,6 +72,7 @@ static void lowPassButterworthFilter(float x, butterworthFilter_t *filterResult)
 
     filterResult->result = filterResult->v[0] + filterResult->v[1];
 }
+
 static float meanDiff(float M, meanDiffFilter_t *filterValues)
 {
     float avg = 0.0;
@@ -174,7 +89,8 @@ static float meanDiff(float M, meanDiffFilter_t *filterValues)
     avg = filterValues->sum / filterValues->count;
     return avg - M;
 }
-bool detectPulse(float sensor_value)
+
+static bool detectPulse(float sensor_value)
 {
     static float prev_sensor_value = 0;
     static uint8_t values_went_down = 0;
@@ -189,8 +105,10 @@ bool detectPulse(float sensor_value)
         currentBeat = 0;
         values_went_down = 0;
         lastBeatThreshold = 0;
+        printf("Sensor value exceeded max threshold\n");
         return false;
     }
+    printf("pulse state = %d\n", currentPulseDetectorState);
 
     switch (currentPulseDetectorState)
     {
@@ -210,7 +128,6 @@ bool detectPulse(float sensor_value)
         }
         else
         {
-
             if (debug == true)
             {
                 printf("Peak reached: ");
@@ -264,9 +181,8 @@ bool detectPulse(float sensor_value)
                 printf("Avg. BPM: ");
                 printf("%f\n", currentBPM);
             }
-
             currentPulseDetectorState = PULSE_TRACE_DOWN;
-
+            printf("Pulse Traced Up\n");
             return true;
         }
         break;
@@ -283,18 +199,23 @@ bool detectPulse(float sensor_value)
         }
         break;
     }
-
     prev_sensor_value = sensor_value;
+    printf("Pulse is not absent\n");
     return false;
 }
 
 void init()
 {
     currentPulseDetectorState = PULSE_IDLE;
+    IrLedCurrent = MAX30100_LED_CURRENT_50MA;
+
+    redLEDCurrent = (uint8_t)STARTING_RED_LED_CURRENT;
+
+    lastREDLedCurrentCheck = 0;
+
     prevFifo.rawIR = 0;
     prevFifo.rawRed = 0;
-    // redLEDCurrent = (uint8_t)STARTING_RED_LED_CURRENT;
-    lastREDLedCurrentCheck = 0;
+
     dcFilterIR.w = 0;
     dcFilterIR.result = 0;
 
@@ -322,7 +243,43 @@ void init()
 
     lastBeatThreshold = 0;
 }
-static pulseoxymeter_t update()
+
+static void balanceIntesities(float redLedDC, float IRLedDC)
+{
+
+    if (millis() - lastREDLedCurrentCheck >= RED_LED_CURRENT_ADJUSTMENT_MS)
+    {
+        // Serial.println( redLedDC - IRLedDC );
+        if (IRLedDC - redLedDC > MAGIC_ACCEPTABLE_INTENSITY_DIFF && redLEDCurrent < MAX30100_LED_CURRENT_50MA)
+        {
+            redLEDCurrent++;
+            // setLEDCurrents(redLEDCurrent, IrLedCurrent);
+            if (ioctl(fd, LED_CURRENT_SETTING, (redLEDCurrent << 4) | IrLedCurrent) < 0)
+            {
+                perror("failed to set led currents\n");
+                return;
+            }
+            if (debug == true)
+                printf("RED LED Current +\n");
+        }
+        else if (redLedDC - IRLedDC > MAGIC_ACCEPTABLE_INTENSITY_DIFF && redLEDCurrent > 0)
+        {
+            redLEDCurrent--;
+            // setLEDCurrents(redLEDCurrent, IrLedCurrent);
+            if (ioctl(fd, LED_CURRENT_SETTING, (redLEDCurrent << 4) | IrLedCurrent) < 0)
+            {
+                perror("failed to set led currents\n");
+                return;
+            }
+            if (debug == true)
+                printf("RED LED Current -\n");
+        }
+
+        lastREDLedCurrentCheck = millis();
+    }
+}
+
+pulseoxymeter_t update()
 {
     pulseoxymeter_t result = {
         /*bool pulseDetected*/ false,
@@ -339,13 +296,22 @@ static pulseoxymeter_t update()
 
     dcFilterIR = dcRemoval((float)rawData.rawIR, prevFifo.rawIR, ALPHA);
     dcFilterRed = dcRemoval((float)rawData.rawRed, prevFifo.rawRed, ALPHA);
+    printf("dc removed IR = %.3f\n", dcFilterIR.result);
+    printf("dc removed Red = %.3f\n", dcFilterRed.result);
+
     prevFifo = rawData;
+
     float meanDiffResIR = meanDiff(dcFilterIR.result, &meanDiffIR);
+    printf("mean filter = %.3f\n", meanDiffResIR);
+
     lowPassButterworthFilter(meanDiffResIR /* -dcFilterIR.result*/, &lpbFilterIR);
+    printf("LPB Flilter = %.3f\n", lpbFilterIR.result);
+
     irACValueSqSum += dcFilterIR.result * dcFilterIR.result;
     redACValueSqSum += dcFilterRed.result * dcFilterRed.result;
     samplesRecorded++;
-
+    // printf("lpd filter value = %.3f\n", lpbFilterIR.result);
+    printf("samples recorded = %d\n", samplesRecorded);
     if (detectPulse(lpbFilterIR.result) && samplesRecorded > 0)
     {
         result.pulseDetected = true;
@@ -371,6 +337,8 @@ static pulseoxymeter_t update()
         }
     }
 
+    balanceIntesities(dcFilterRed.w, dcFilterIR.w);
+
     result.heartBPM = currentBPM;
     result.irCardiogram = lpbFilterIR.result;
     result.irDcValue = dcFilterIR.w;
@@ -380,101 +348,4 @@ static pulseoxymeter_t update()
     result.dcFilteredRed = dcFilterRed.result;
 
     return result;
-}
-
-pulseoxymeter_t pulseoxymter;
-int main()
-{
-    int fd, op;
-    fd = open("/dev/pulse_oximeter", O_RDWR);
-    if (fd < 0)
-    {
-        perror("failed to open");
-        return -1;
-    }
-    printf("Enter 1-HR,2-SPO2,3-Temp: ");
-    scanf("%d", &op);
-    init();
-    debug = false;
-
-    switch (op)
-    {
-    case 1:
-    {
-        if (ioctl(fd, HEART_RATE_MODE, 0) < 0)
-        {
-            perror("failed to set Heart rate mode\n");
-            return -1;
-        }
-        while (1)
-        {
-            if (read(fd, buf, 4) < 0)
-            {
-                perror("failed to read");
-                return -1;
-            }
-            pulseoxymter = update();
-
-            if (pulseoxymter.pulseDetected == true)
-            {
-                printf("BPM = %.3f\n", pulseoxymter.heartBPM);
-            }
-            usleep(10000);
-        }
-
-        break;
-    }
-    case 2:
-    {
-        if (ioctl(fd, SPO2_MODE, 0) < 0)
-        {
-            perror("failed to set SPO2 mode\n");
-            return -1;
-        }
-        while (1)
-        {
-            if (read(fd, buf, 4) < 0)
-            {
-                perror("failed to read");
-                return -1;
-            }
-            pulseoxymter = update();
-
-            if (pulseoxymter.pulseDetected == true)
-            {
-                printf("SPO2= %.3f\n", pulseoxymter.SaO2);
-            }
-            usleep(10000);
-        }
-        break;
-    }
-    case 3:
-    {
-        uint8_t temp;
-        float final_temp, frac_temp;
-        if (ioctl(fd, TEMPERATURE_MODE, 0) < 0)
-        {
-            perror("failed to set Temp mode\n");
-            return -1;
-        }
-        if (read(fd, buf, 2) < 0)
-        {
-            perror("failed to read\n");
-            return -1;
-        }
-        temp = buf[0];
-        frac_temp = (float)buf[1] * (0.0625);
-
-        final_temp = frac_temp + temp;
-        printf("Temp(int) = %d\nTemp(frac) = %.3f\nFinal Temperature = %.3f\n", temp, frac_temp, final_temp);
-        exit(1);
-    }
-    default:
-    {
-        printf("Invalid choice.");
-        exit(1);
-    }
-    }
-    close(fd);
-    return 0;
 }
